@@ -169,6 +169,13 @@ public class Admin implements KeywordExecutable {
     boolean verbose = false;
   }
 
+  @Parameters(
+      commandDescription = "List or delete Tablet Server locks. Default with no arguments is to list the locks.")
+  static class TabletServerLocksCommand {
+    @Parameter(names = "-delete", description = "specify a tablet server lock to delete")
+    String delete = null;
+  }
+
   public static void main(String[] args) {
     new Admin().execute(args);
   }
@@ -227,6 +234,8 @@ public class Admin implements KeywordExecutable {
     VerifyTabletAssignmentsCommand verifyTabletAssignmentsOpts =
         new VerifyTabletAssignmentsCommand();
     cl.addCommand("verifyTabletAssigns", verifyTabletAssignmentsOpts);
+    TabletServerLocksCommand tServerLocksOpts = new TabletServerLocksCommand();
+    cl.addCommand("locks", tServerLocksOpts);
 
     cl.parse(args);
 
@@ -279,6 +288,9 @@ public class Admin implements KeywordExecutable {
       } else if (cl.getParsedCommand().equals("verifyTabletAssigns")) {
         VerifyTabletAssignments.verifyTableAssignments(opts.getClientProps(),
             verifyTabletAssignmentsOpts.verbose);
+      } else if (cl.getParsedCommand().equals("locks")) {
+        TabletServerLocks.tabletServerLocks("accumulo locks", context,
+            args.length > 2 ? args[2] : null, tServerLocksOpts.delete);
       } else {
         everything = cl.getParsedCommand().equals("stopAll");
 
