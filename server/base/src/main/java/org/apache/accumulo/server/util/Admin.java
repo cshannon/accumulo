@@ -289,8 +289,7 @@ public class Admin implements KeywordExecutable {
         VerifyTabletAssignments.verifyTableAssignments(opts.getClientProps(),
             verifyTabletAssignmentsOpts.verbose);
       } else if (cl.getParsedCommand().equals("locks")) {
-        TabletServerLocks.tabletServerLocks("accumulo locks", context,
-            args.length > 2 ? args[2] : null, tServerLocksOpts.delete);
+        TabletServerLocks.run(context, args.length > 2 ? args[2] : null, tServerLocksOpts.delete);
       } else {
         everything = cl.getParsedCommand().equals("stopAll");
 
