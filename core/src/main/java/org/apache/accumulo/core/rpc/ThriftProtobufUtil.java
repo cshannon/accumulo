@@ -185,8 +185,6 @@ public class ThriftProtobufUtil {
         return TCompactionKind.SYSTEM;
       case CK_USER:
         return TCompactionKind.USER;
-      case CK_UNKNOWN:
-        return null;
       default:
         throw new IllegalArgumentException("Unexpected PCompactionKind: " + kind);
     }
@@ -216,8 +214,6 @@ public class ThriftProtobufUtil {
       case FI_USER:
         type = TFateInstanceType.USER;
         break;
-      case FI_UNKNOWN:
-        return null;
       default:
         throw new IllegalArgumentException("Unexpected TFateInstanceType: " + fateId.getType());
     }
