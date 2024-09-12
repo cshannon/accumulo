@@ -45,6 +45,7 @@ import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledFuture;
@@ -67,6 +68,7 @@ import org.apache.accumulo.core.clientImpl.thrift.TableOperationExceptionType;
 import org.apache.accumulo.core.clientImpl.thrift.ThriftSecurityException;
 import org.apache.accumulo.core.clientImpl.thrift.ThriftTableOperationException;
 import org.apache.accumulo.core.compaction.thrift.CompactionCoordinatorService;
+import org.apache.accumulo.core.compaction.thrift.CompactorService;
 import org.apache.accumulo.core.compaction.thrift.TCompactionState;
 import org.apache.accumulo.core.compaction.thrift.TCompactionStatusUpdate;
 import org.apache.accumulo.core.compaction.thrift.TExternalCompaction;
@@ -98,6 +100,8 @@ import org.apache.accumulo.core.metadata.schema.TabletMetadata.ColumnType;
 import org.apache.accumulo.core.metadata.schema.TabletsMetadata;
 import org.apache.accumulo.core.metadata.schema.filters.HasExternalCompactionsFilter;
 import org.apache.accumulo.core.metrics.MetricsProducer;
+import org.apache.accumulo.core.rpc.ThriftUtil;
+import org.apache.accumulo.core.rpc.clients.ThriftClientTypes;
 import org.apache.accumulo.core.securityImpl.thrift.TCredentials;
 import org.apache.accumulo.core.spi.compaction.CompactionJob;
 import org.apache.accumulo.core.spi.compaction.CompactionKind;
@@ -126,6 +130,7 @@ import org.apache.accumulo.manager.compaction.coordinator.commit.CompactionCommi
 import org.apache.accumulo.manager.compaction.coordinator.commit.RenameCompactionFile;
 import org.apache.accumulo.manager.compaction.queue.CompactionJobPriorityQueue;
 import org.apache.accumulo.manager.compaction.queue.CompactionJobQueues;
+import org.apache.accumulo.manager.compaction.queue.CompactionJobQueues.MetaJob;
 import org.apache.accumulo.server.ServerContext;
 import org.apache.accumulo.server.ServiceEnvironmentImpl;
 import org.apache.accumulo.server.compaction.CompactionConfigStorage;
@@ -136,6 +141,7 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.thrift.TException;
+import org.apache.thrift.transport.TTransportException;
 import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -186,6 +192,9 @@ public class CompactionCoordinator
   private final LoadingCache<FateId,CompactionConfig> compactionConfigCache;
   private final Cache<Path,Integer> tabletDirCache;
   private final DeadCompactionDetector deadCompactionDetector;
+  // TODO: should we use a cache with a timeout or use the future timeout to remove the job
+  // from the data structure?
+  private final Map<CompactorKey,CompletableFuture<MetaJob>> futureJobs = new ConcurrentHashMap<>();
 
   private final QueueMetrics queueMetrics;
   private final Manager manager;
@@ -424,6 +433,38 @@ public class CompactionCoordinator
     }
 
     return new TNextCompactionJob(result, compactorCounts.get(groupName));
+  }
+
+  private void readyForCompactionJob(TInfo tinfo, TCredentials credentials, String groupName,
+      String compactorAddress, String externalCompactionId) throws ThriftSecurityException {
+
+    // do not expect users to call this directly, expect compactors to call this method
+    if (!security.canPerformSystemActions(credentials)) {
+      throw new AccumuloSecurityException(credentials.getPrincipal(),
+          SecurityErrorCode.PERMISSION_DENIED).asThriftException();
+    }
+    CompactorGroupId groupId = CompactorGroupId.of(groupName);
+    LOG.trace("getCompactionJob called for group {} by compactor {}", groupId, compactorAddress);
+    TIME_COMPACTOR_LAST_CHECKED.put(groupId, System.currentTimeMillis());
+
+    var key = new CompactorKey(groupName, compactorAddress, externalCompactionId);
+    futureJobs.computeIfAbsent(key, k -> {
+      CompletableFuture<MetaJob> metaJob = jobQueues.getAsync(groupId);
+      metaJob.whenComplete((mj, t) -> {
+        try {
+          // send back job
+          if (t != null) {
+            // exception
+          } else {
+            // send back
+          }
+        } finally {
+          futureJobs.remove(key);
+        }
+      });
+      return metaJob;
+    });
+
   }
 
   @VisibleForTesting
@@ -1238,4 +1279,45 @@ public class CompactionCoordinator
 
     return Set.of();
   }
+
+  protected CompactorService.Client getCompactorClient(String compactorAddress) throws
+      TTransportException {
+    var compactorHost = HostAndPort.fromHost(compactorAddress);
+
+    LOG.trace("Compactor address is: {}", compactorHost);
+    return ThriftUtil.getClient(ThriftClientTypes.COMPACTOR, compactorHost,
+        ctx);
+  }
+
+  private static class CompactorKey {
+    private final String groupName;
+    private final String compactorAddress;
+    private final String externalCompactionId;
+
+    private CompactorKey(String groupName, String compactorAddress, String externalCompactionId) {
+      this.groupName = groupName;
+      this.compactorAddress = compactorAddress;
+      this.externalCompactionId = externalCompactionId;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      if (this == o) {
+        return true;
+      }
+      if (o == null || getClass() != o.getClass()) {
+        return false;
+      }
+      CompactorKey that = (CompactorKey) o;
+      return Objects.equals(groupName, that.groupName)
+          && Objects.equals(compactorAddress, that.compactorAddress)
+          && Objects.equals(externalCompactionId, that.externalCompactionId);
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(groupName, compactorAddress, externalCompactionId);
+    }
+  }
+
 }
