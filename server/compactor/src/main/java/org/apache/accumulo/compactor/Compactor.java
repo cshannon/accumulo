@@ -382,6 +382,11 @@ public class Compactor extends AbstractServer implements MetricsProducer, Compac
     cancel(externalCompactionId);
   }
 
+  @Override
+  public void compact(TInfo tinfo, TNextCompactionJob job) throws TException {
+
+  }
+
   /**
    * Send an update to the CompactionCoordinator for this job
    *

@@ -435,7 +435,8 @@ public class CompactionCoordinator
     return new TNextCompactionJob(result, compactorCounts.get(groupName));
   }
 
-  private void readyForCompactionJob(TInfo tinfo, TCredentials credentials, String groupName,
+  @Override
+  public void readyForCompactionJob(TInfo tinfo, TCredentials credentials, String groupName,
       String compactorAddress, String externalCompactionId) throws ThriftSecurityException {
 
     // do not expect users to call this directly, expect compactors to call this method
@@ -454,10 +455,13 @@ public class CompactionCoordinator
         try {
           // send back job
           if (t != null) {
-            // exception
+            var compactor = getCompactorClient(key.compactorAddress);
+            //compactor.se
           } else {
             // send back
           }
+        } catch (TTransportException e) {
+          throw new RuntimeException(e);
         } finally {
           futureJobs.remove(key);
         }

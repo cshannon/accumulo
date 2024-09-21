@@ -91,6 +91,14 @@ service CompactionCoordinatorService {
     4:string compactor
     5:string externalCompactionId
   )
+
+  void readyForCompactionJob(
+    1:client.TInfo tinfo
+    2:security.TCredentials credentials
+    3:string groupName
+    4:string compactor
+    5:string externalCompactionId
+  )
   
   /*
    * Called by Compactor to update the Coordinator with the state of the compaction
@@ -164,5 +172,10 @@ service CompactorService {
     1:client.TInfo tinfo
     2:security.TCredentials credentials
     3:string externalCompactionId
+  )
+
+  void compact(
+    1:client.TInfo tinfo
+    2:TNextCompactionJob job
   )
 }
