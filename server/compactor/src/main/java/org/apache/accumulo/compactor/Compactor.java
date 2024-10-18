@@ -19,6 +19,7 @@
 package org.apache.accumulo.compactor;
 
 import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.apache.accumulo.core.metrics.Metric.COMPACTOR_ENTRIES_READ;
 import static org.apache.accumulo.core.metrics.Metric.COMPACTOR_ENTRIES_WRITTEN;
 import static org.apache.accumulo.core.metrics.Metric.COMPACTOR_MAJC_STUCK;
@@ -26,7 +27,13 @@ import static org.apache.accumulo.core.util.LazySingletons.RANDOM;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.net.UnknownHostException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpRequest.BodyPublishers;
+import java.net.http.HttpResponse.BodyHandlers;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -56,6 +63,7 @@ import org.apache.accumulo.core.compaction.thrift.CompactionCoordinatorService.C
 import org.apache.accumulo.core.compaction.thrift.CompactorService;
 import org.apache.accumulo.core.compaction.thrift.TCompactionState;
 import org.apache.accumulo.core.compaction.thrift.TCompactionStatusUpdate;
+import org.apache.accumulo.core.compaction.thrift.TExternalCompactionList;
 import org.apache.accumulo.core.compaction.thrift.TNextCompactionJob;
 import org.apache.accumulo.core.compaction.thrift.UnknownCompactionIdException;
 import org.apache.accumulo.core.conf.AccumuloConfiguration;
@@ -65,6 +73,7 @@ import org.apache.accumulo.core.conf.SiteConfiguration;
 import org.apache.accumulo.core.data.NamespaceId;
 import org.apache.accumulo.core.data.TableId;
 import org.apache.accumulo.core.dataImpl.KeyExtent;
+import org.apache.accumulo.core.dataImpl.thrift.TKeyExtent;
 import org.apache.accumulo.core.fate.FateId;
 import org.apache.accumulo.core.fate.zookeeper.ZooReaderWriter;
 import org.apache.accumulo.core.fate.zookeeper.ZooUtil.NodeExistsPolicy;
@@ -115,18 +124,22 @@ import org.apache.accumulo.server.compaction.RetryableThriftCall;
 import org.apache.accumulo.server.compaction.RetryableThriftCall.RetriesExceededException;
 import org.apache.accumulo.server.conf.TableConfiguration;
 import org.apache.accumulo.server.fs.VolumeManager;
+import org.apache.accumulo.server.http.rest.GetCompactionJobRequest;
+import org.apache.accumulo.server.http.rest.ThriftMixIn;
 import org.apache.accumulo.server.rpc.ServerAddress;
 import org.apache.accumulo.server.rpc.TServerUtils;
 import org.apache.accumulo.server.rpc.ThriftProcessorTypes;
 import org.apache.accumulo.tserver.log.LogSorter;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.thrift.TBase;
 import org.apache.thrift.TException;
 import org.apache.thrift.transport.TTransportException;
 import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Preconditions;
 import com.google.common.net.HostAndPort;
 
@@ -468,8 +481,10 @@ public class Compactor extends AbstractServer implements MetricsProducer, Compac
             ExternalCompactionId eci = ExternalCompactionId.generate(uuid.get());
             LOG.trace("Attempting to get next job, eci = {}", eci);
             currentCompactionId.set(eci);
-            return coordinatorClient.getCompactionJob(TraceUtil.traceInfo(),
-                getContext().rpcCreds(), this.getResourceGroup(),
+
+            JsonCoordinatorService jsonClient = new JsonCoordinatorService(getContext());
+            return jsonClient.getCompactionJob(TraceUtil.traceInfo(), getContext().rpcCreds(),
+                this.getResourceGroup(),
                 ExternalCompactionUtil.getHostPortString(compactorAddress.getAddress()),
                 eci.toString());
           } catch (Exception e) {
@@ -997,6 +1012,85 @@ public class Compactor extends AbstractServer implements MetricsProducer, Compac
       return "";
     } else {
       return eci.canonical();
+    }
+  }
+
+  protected static class JsonCoordinatorService implements CompactionCoordinatorService.Iface {
+    private final ServerContext context;
+    private final ObjectMapper mapper;
+    private final URL url;
+
+    protected JsonCoordinatorService(ServerContext context) throws TTransportException {
+      this.context = context;
+      var coordinatorHost = ExternalCompactionUtil.findCompactionCoordinator(context);
+      if (coordinatorHost.isEmpty()) {
+        throw new TTransportException("Unable to get CompactionCoordinator address from ZooKeeper");
+      }
+      try {
+        this.url =
+            new URL("http://" + coordinatorHost.orElseThrow().getHost() + ":8999/rest/cc/next");
+      } catch (MalformedURLException e) {
+        throw new RuntimeException(e);
+      }
+      mapper = new ObjectMapper();
+      mapper.addMixIn(TBase.class, ThriftMixIn.class);
+    }
+
+    @Override
+    public void compactionCompleted(TInfo tinfo, TCredentials credentials,
+        String externalCompactionId, TKeyExtent extent, TCompactionStats stats) throws TException {
+
+    }
+
+    @Override
+    public TNextCompactionJob getCompactionJob(TInfo tinfo, TCredentials credentials,
+        String groupName, String compactor, String externalCompactionId) throws TException {
+
+      var cjr = new GetCompactionJobRequest(tinfo, credentials, groupName, compactor,
+          externalCompactionId);
+
+      try {
+        HttpRequest req = HttpRequest.newBuilder(url.toURI())
+            .timeout(Duration.ofMillis(context.getClientTimeoutInMillis()))
+            .POST(BodyPublishers.ofString(mapper.writeValueAsString(cjr), UTF_8))
+            .setHeader("Content-Type", "application/json").build();
+        String result = HttpClient.newHttpClient().send(req, BodyHandlers.ofString()).body();
+
+        return mapper.readValue(result, TNextCompactionJob.class);
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+    }
+
+    @Override
+    public void updateCompactionStatus(TInfo tinfo, TCredentials credentials,
+        String externalCompactionId, TCompactionStatusUpdate status, long timestamp)
+        throws TException {
+
+    }
+
+    @Override
+    public void compactionFailed(TInfo tinfo, TCredentials credentials, String externalCompactionId,
+        TKeyExtent extent) throws TException {
+
+    }
+
+    @Override
+    public TExternalCompactionList getRunningCompactions(TInfo tinfo, TCredentials credentials)
+        throws TException {
+      return null;
+    }
+
+    @Override
+    public TExternalCompactionList getCompletedCompactions(TInfo tinfo, TCredentials credentials)
+        throws TException {
+      return null;
+    }
+
+    @Override
+    public void cancel(TInfo tinfo, TCredentials credentials, String externalCompactionId)
+        throws TException {
+
     }
   }
 
