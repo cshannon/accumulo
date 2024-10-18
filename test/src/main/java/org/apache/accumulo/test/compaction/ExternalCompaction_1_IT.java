@@ -18,6 +18,7 @@
  */
 package org.apache.accumulo.test.compaction;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.apache.accumulo.core.fate.AbstractFateStore.createDummyLockID;
 import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.GROUP1;
 import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.GROUP2;
@@ -40,6 +41,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpRequest.BodyPublishers;
+import java.net.http.HttpResponse.BodyHandlers;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -48,6 +54,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
@@ -68,6 +75,7 @@ import org.apache.accumulo.core.client.admin.PluginConfig;
 import org.apache.accumulo.core.client.admin.compaction.CompactableFile;
 import org.apache.accumulo.core.client.admin.compaction.CompactionSelector;
 import org.apache.accumulo.core.client.admin.compaction.CompressionConfigurer;
+import org.apache.accumulo.core.compaction.thrift.TNextCompactionJob;
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Mutation;
@@ -93,21 +101,30 @@ import org.apache.accumulo.core.metadata.schema.TabletMetadata;
 import org.apache.accumulo.core.spi.compaction.CompactionKind;
 import org.apache.accumulo.core.spi.compaction.CompactorGroupId;
 import org.apache.accumulo.core.spi.compaction.SimpleCompactionDispatcher;
+import org.apache.accumulo.core.trace.TraceUtil;
+import org.apache.accumulo.core.util.compaction.ExternalCompactionUtil;
 import org.apache.accumulo.harness.MiniClusterConfigurationCallback;
 import org.apache.accumulo.harness.SharedMiniClusterBase;
 import org.apache.accumulo.manager.Manager;
+import org.apache.accumulo.manager.http.rest.GetCompactionJobRequest;
+import org.apache.accumulo.manager.http.rest.TBaseJson;
 import org.apache.accumulo.minicluster.ServerType;
 import org.apache.accumulo.miniclusterImpl.MiniAccumuloConfigImpl;
+import org.apache.accumulo.server.ServerContext;
 import org.apache.accumulo.server.util.FindCompactionTmpFiles;
 import org.apache.accumulo.test.functional.CompactionIT.ErrorThrowingSelector;
 import org.apache.accumulo.test.util.Wait;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
+import org.apache.thrift.transport.TTransportException;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Preconditions;
+import com.google.common.net.HostAndPort;
 
 public class ExternalCompaction_1_IT extends SharedMiniClusterBase {
 
@@ -196,6 +213,31 @@ public class ExternalCompaction_1_IT extends SharedMiniClusterBase {
 
       assertNoCompactionMetadata(getCluster().getServerContext(), tableName);
     }
+  }
+
+  @Test
+  public void testRest() throws Exception {
+    ServerContext ctx = getCluster().getServerContext();
+    Optional<HostAndPort> coordinatorHost = ExternalCompactionUtil.findCompactionCoordinator(ctx);
+    if (coordinatorHost.isEmpty()) {
+      throw new TTransportException("Unable to get CompactionCoordinator address from ZooKeeper");
+    }
+
+    URL url = new URL("http://" + coordinatorHost.orElseThrow().getHost() + ":8999/rest/cc/next");
+    System.out.println("Fetching web page " + url);
+
+    ObjectMapper om = new ObjectMapper();
+    var cjr = new GetCompactionJobRequest(TraceUtil.traceInfo(), ctx.rpcCreds(), "", "", "ecid1");
+
+    var req = HttpRequest.newBuilder(url.toURI())
+        .POST(BodyPublishers.ofString(om.writeValueAsString(cjr), UTF_8))
+        .setHeader("Content-Type", "application/json").build();
+
+    String result = HttpClient.newHttpClient().send(req, BodyHandlers.ofString()).body();
+    System.out.println(result);
+
+    TBaseJson<TNextCompactionJob> nextJob = om.readValue(result, new TypeReference<>() {});
+    assertEquals("ecid1", nextJob.getObject().getJob().getExternalCompactionId());
   }
 
   @Test
