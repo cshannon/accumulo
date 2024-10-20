@@ -640,6 +640,9 @@ public class CompactionCoordinator
         resultHandler.onComplete(null);
       }
 
+      // TODO: Use a thread pool and use thenAcceptAsync and exceptionallyAsync()
+      // Async send back to the compactor when a new job is ready
+      // Need the unused var for errorprone
       @Override
       public void getCompactionJob(TInfo tinfo, TCredentials credentials, String groupName,
           String compactorAddress, String externalCompactionId,
@@ -657,7 +660,7 @@ public class CompactionCoordinator
             compactorAddress);
         TIME_COMPACTOR_LAST_CHECKED.put(groupId, System.currentTimeMillis());
 
-        var future = jobQueues.getAsync(groupId).thenApply(metaJob -> {
+        var future = jobQueues.getAsync(groupId).thenAccept(metaJob -> {
           LOG.trace("Next metaJob is ready {}", metaJob.getJob());
           Optional<CompactionConfig> compactionConfig = getCompactionConfig(metaJob);
 
@@ -694,13 +697,7 @@ public class CompactionCoordinator
             result = new TExternalCompactionJob();
           }
 
-          return new TNextCompactionJob(result, compactorCounts.get(groupName));
-        });
-
-        // TODO: Use a thread pool and use thenAcceptAsync and exceptionallyAsync()
-        // Async send back to the compactor when a new job is ready
-        // Need the unused var for errorprone
-        var unused = future.thenAccept(ecj -> {
+          var ecj = new TNextCompactionJob(result, compactorCounts.get(groupName));
           LOG.debug("Received next compaction job {}", ecj);
           resultHandler.onComplete(ecj);
         }).orTimeout(maxJobRequestWaitTime, MILLISECONDS).exceptionally(e -> {
