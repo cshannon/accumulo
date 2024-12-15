@@ -21,16 +21,20 @@ package org.apache.accumulo.manager.tableOps.create;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import java.io.IOException;
+import java.time.Duration;
+import java.util.SortedMap;
 import java.util.SortedSet;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
 import org.apache.accumulo.core.Constants;
+import org.apache.accumulo.core.client.admin.TabletMergeability;
 import org.apache.accumulo.core.fate.FateId;
 import org.apache.accumulo.core.fate.Repo;
+import org.apache.accumulo.core.util.json.ByteArrayToBase64TypeAdapter;
 import org.apache.accumulo.manager.Manager;
 import org.apache.accumulo.manager.tableOps.ManagerRepo;
 import org.apache.accumulo.manager.tableOps.TableInfo;
-import org.apache.accumulo.manager.tableOps.Utils;
 import org.apache.accumulo.server.tablets.UniqueNameAllocator;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -38,6 +42,8 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.gson.Gson;
 
 class ChooseDir extends ManagerRepo {
   private static final long serialVersionUID = 1L;
@@ -83,9 +89,36 @@ class ChooseDir extends ManagerRepo {
    * to the file system for later use during this FATE operation.
    */
   private void createTableDirectoriesInfo(Manager manager) throws IOException {
-    SortedSet<Text> splits = Utils.getSortedSetFromFile(manager, tableInfo.getSplitPath(), true);
+    // SortedSet<Text> splits = Utils.getSortedSetFromFile(manager, tableInfo.getSplitPath(), true);
+    SortedMap<Text,TabletMergeability> splits =
+        getSortedMapFromFile(manager, tableInfo.getSplitPath());
     SortedSet<Text> tabletDirectoryInfo = createTabletDirectoriesSet(manager, splits.size());
     writeTabletDirectoriesToFileSystem(manager, tabletDirectoryInfo);
+  }
+
+  // TODO: Temporary put here as a test, needs to be moved to Utils
+  public static SortedMap<Text,TabletMergeability> getSortedMapFromFile(Manager manager, Path path)
+      throws IOException {
+    FileSystem fs = path.getFileSystem(manager.getContext().getHadoopConf());
+    var data = new TreeMap<Text,TabletMergeability>();
+    try (var file = new java.util.Scanner(fs.open(path), UTF_8)) {
+      while (file.hasNextLine()) {
+        String line = file.nextLine();
+        log.info("path: {}, line: {}", path, line);
+        SplitTm splitTm = gson.fromJson(line, SplitTm.class);
+        Duration d = Duration.ofNanos(-1L);
+        data.put(new Text(splitTm.splitBytes), TabletMergeability.from(d));
+      }
+    }
+    return data;
+  }
+
+  // TODO: make more generic and re-usable
+  private static final Gson gson = ByteArrayToBase64TypeAdapter.createBase64Gson();
+
+  private static class SplitTm {
+    public byte[] splitBytes;
+    public byte[] tmBytes;
   }
 
   /**

@@ -34,7 +34,6 @@ import static org.apache.accumulo.core.util.Validators.sameNamespaceAs;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Base64;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -84,6 +83,7 @@ import org.apache.accumulo.core.securityImpl.thrift.TCredentials;
 import org.apache.accumulo.core.util.ByteBufferUtil;
 import org.apache.accumulo.core.util.TextUtil;
 import org.apache.accumulo.core.util.Validator;
+import org.apache.accumulo.core.util.json.ByteArrayToBase64TypeAdapter;
 import org.apache.accumulo.core.util.tables.TableNameUtil;
 import org.apache.accumulo.core.volume.Volume;
 import org.apache.accumulo.manager.tableOps.ChangeTableState;
@@ -113,6 +113,8 @@ import org.apache.hadoop.io.Text;
 import org.apache.thrift.TDeserializer;
 import org.apache.thrift.TException;
 import org.slf4j.Logger;
+
+import com.google.gson.Gson;
 
 class FateServiceHandler implements FateService.Iface {
 
@@ -209,7 +211,7 @@ class FateServiceHandler implements FateService.Iface {
         TabletAvailability initialTabletAvailability =
             TabletAvailability.valueOf(ByteBufferUtil.toString(arguments.get(3)));
         int splitCount = Integer.parseInt(ByteBufferUtil.toString(arguments.get(4)));
-        validateArgumentCount(arguments, tableOp, SPLIT_OFFSET + splitCount);
+        validateArgumentCount(arguments, tableOp, SPLIT_OFFSET + splitCount * 2);
         Path splitsPath = null;
         Path splitsDirsPath = null;
         if (splitCount > 0) {
@@ -922,16 +924,30 @@ class FateServiceHandler implements FateService.Iface {
     FileSystem fs = splitsPath.getFileSystem(manager.getContext().getHadoopConf());
     try (FSDataOutputStream stream = fs.create(splitsPath)) {
       // base64 encode because splits can contain binary
-      for (int i = splitOffset; i < splitCount + splitOffset; i++) {
+      int argCount = splitCount * 2;
+      for (int i = splitOffset; i < argCount + splitOffset; i++) {
         byte[] splitBytes = ByteBufferUtil.toBytes(arguments.get(i));
-        String encodedSplit = Base64.getEncoder().encodeToString(splitBytes);
-        stream.write((encodedSplit + '\n').getBytes(UTF_8));
+        byte[] tmBytes = ByteBufferUtil.toBytes(arguments.get(++i));
+        // String encodedSplit = Base64.getEncoder().encodeToString(splitBytes);
+        // String encodedTm = Base64.getEncoder().encodeToString(tmBytes);
+        SplitTm encoded = new SplitTm();
+        encoded.splitBytes = splitBytes;
+        encoded.tmBytes = tmBytes;
+        log.info("json:" + gson.toJson(encoded));
+        stream.write((gson.toJson(encoded) + '\n').getBytes(UTF_8));
       }
     } catch (IOException e) {
       log.error("Error in FateServiceHandler while writing splits to {}: {}", splitsPath,
           e.getMessage());
       throw e;
     }
+  }
+
+  private static final Gson gson = ByteArrayToBase64TypeAdapter.createBase64Gson();
+
+  private static class SplitTm {
+    public byte[] splitBytes;
+    public byte[] tmBytes;
   }
 
   /**

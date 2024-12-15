@@ -105,6 +105,7 @@ import org.apache.accumulo.core.client.admin.SummaryRetriever;
 import org.apache.accumulo.core.client.admin.TableOperations;
 import org.apache.accumulo.core.client.admin.TabletAvailability;
 import org.apache.accumulo.core.client.admin.TabletInformation;
+import org.apache.accumulo.core.client.admin.TabletMergeability;
 import org.apache.accumulo.core.client.admin.TimeType;
 import org.apache.accumulo.core.client.admin.compaction.CompactionConfigurer;
 import org.apache.accumulo.core.client.admin.compaction.CompactionSelector;
@@ -263,11 +264,14 @@ public class TableOperationsImpl extends TableOperationsHelper {
     // Check for possible initial splits to be added at table creation
     // Always send number of initial splits to be created, even if zero. If greater than zero,
     // add the splits to the argument List which will be used by the FATE operations.
-    int numSplits = ntc.getSplits().size();
+    int numSplits = ntc.getSplitsMap().size();
     args.add(ByteBuffer.wrap(String.valueOf(numSplits).getBytes(UTF_8)));
     if (numSplits > 0) {
-      for (Text t : ntc.getSplits()) {
-        args.add(TextUtil.getByteBuffer(t));
+      for (Entry<Text,TabletMergeability> t : ntc.getSplitsMap().entrySet()) {
+        args.add(TextUtil.getByteBuffer(t.getKey()));
+        ByteBuffer tm = ByteBuffer.allocate(Long.BYTES);
+        tm.putLong(t.getValue().getDelay().toNanos());
+        args.add(tm);
       }
     }
 

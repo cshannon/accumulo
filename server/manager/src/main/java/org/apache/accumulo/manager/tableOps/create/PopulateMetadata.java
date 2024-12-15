@@ -21,10 +21,12 @@ package org.apache.accumulo.manager.tableOps.create;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.SortedMap;
 import java.util.SortedSet;
-import java.util.TreeSet;
+import java.util.TreeMap;
 import java.util.stream.Stream;
 
+import org.apache.accumulo.core.client.admin.TabletMergeability;
 import org.apache.accumulo.core.dataImpl.KeyExtent;
 import org.apache.accumulo.core.fate.FateId;
 import org.apache.accumulo.core.fate.Repo;
@@ -58,15 +60,16 @@ class PopulateMetadata extends ManagerRepo {
 
   @Override
   public Repo<Manager> call(FateId fateId, Manager env) throws Exception {
-    SortedSet<Text> splits;
+    SortedMap<Text,TabletMergeability> splits;
     Map<Text,Text> splitDirMap;
 
     if (tableInfo.getInitialSplitSize() > 0) {
-      splits = Utils.getSortedSetFromFile(env, tableInfo.getSplitPath(), true);
+      // splits = Utils.getSortedSetFromFile(env, tableInfo.getSplitPath(), true);
+      splits = ChooseDir.getSortedMapFromFile(env, tableInfo.getSplitDirsPath());
       SortedSet<Text> dirs = Utils.getSortedSetFromFile(env, tableInfo.getSplitDirsPath(), false);
       splitDirMap = createSplitDirectoryMap(splits, dirs);
     } else {
-      splits = new TreeSet<>();
+      splits = new TreeMap<>();
       splitDirMap = Map.of();
     }
 
@@ -75,11 +78,12 @@ class PopulateMetadata extends ManagerRepo {
     return new FinishCreateTable(tableInfo);
   }
 
-  private void writeSplitsToMetadataTable(ServerContext context, SortedSet<Text> splits,
-      Map<Text,Text> data, ServiceLock lock) {
+  private void writeSplitsToMetadataTable(ServerContext context,
+      SortedMap<Text,TabletMergeability> splits, Map<Text,Text> data, ServiceLock lock) {
     try (var tabletsMutator = context.getAmple().mutateTablets()) {
       Text prevSplit = null;
-      Iterable<Text> iter = () -> Stream.concat(splits.stream(), Stream.of((Text) null)).iterator();
+      Iterable<Text> iter =
+          () -> Stream.concat(splits.keySet().stream(), Stream.of((Text) null)).iterator();
       for (Text split : iter) {
         var extent = new KeyExtent(tableInfo.getTableId(), split, prevSplit);
 
@@ -109,10 +113,11 @@ class PopulateMetadata extends ManagerRepo {
   /**
    * Create a map containing an association between each split directory and a split value.
    */
-  private Map<Text,Text> createSplitDirectoryMap(SortedSet<Text> splits, SortedSet<Text> dirs) {
+  private Map<Text,Text> createSplitDirectoryMap(SortedMap<Text,TabletMergeability> splits,
+      SortedSet<Text> dirs) {
     Preconditions.checkArgument(splits.size() == dirs.size());
     Map<Text,Text> data = new HashMap<>();
-    Iterator<Text> s = splits.iterator();
+    Iterator<Text> s = splits.keySet().iterator();
     Iterator<Text> d = dirs.iterator();
     while (s.hasNext() && d.hasNext()) {
       data.put(s.next(), d.next());
