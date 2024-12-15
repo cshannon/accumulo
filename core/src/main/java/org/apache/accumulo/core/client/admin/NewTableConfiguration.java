@@ -24,13 +24,17 @@ import static java.util.Objects.requireNonNull;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.SortedMap;
 import java.util.SortedSet;
+import java.util.function.Function;
 
 import org.apache.accumulo.core.client.AccumuloException;
 import org.apache.accumulo.core.client.IteratorSetting;
@@ -48,7 +52,7 @@ import org.apache.accumulo.core.util.LocalityGroupUtil;
 import org.apache.accumulo.core.util.LocalityGroupUtil.LocalityGroupConfigurationError;
 import org.apache.hadoop.io.Text;
 
-import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.ImmutableSortedMap;
 
 /**
  * This object stores table creation parameters. Currently includes: {@link TimeType}, whether to
@@ -71,7 +75,7 @@ public class NewTableConfiguration {
   private Map<String,String> summarizerProps = Collections.emptyMap();
   private Map<String,String> localityProps = Collections.emptyMap();
   private final Map<String,String> iteratorProps = new HashMap<>();
-  private SortedSet<Text> splitProps = Collections.emptySortedSet();
+  private SortedMap<Text,TabletMergeability> splitProps = Collections.emptySortedMap();
   private TabletAvailability initialTabletAvailability = TabletAvailability.ONDEMAND;
 
   private void checkDisjoint(Map<String,String> props, Map<String,String> derivedProps,
@@ -188,7 +192,7 @@ public class NewTableConfiguration {
    * @since 2.0.0
    */
   public Collection<Text> getSplits() {
-    return splitProps;
+    return splitProps.keySet();
   }
 
   /**
@@ -258,10 +262,22 @@ public class NewTableConfiguration {
    *
    * @since 2.0.0
    */
+  @SuppressWarnings("unchecked")
   public NewTableConfiguration withSplits(final SortedSet<Text> splits) {
     checkArgument(splits != null, "splits set is null");
     checkArgument(!splits.isEmpty(), "splits set is empty");
-    this.splitProps = ImmutableSortedSet.copyOf(splits);
+    return withSplits(
+        splits.stream()
+            .collect(ImmutableSortedMap.toImmutableSortedMap(
+                Optional.ofNullable((Comparator<Text>) splits.comparator())
+                    .orElse(Comparator.naturalOrder()),
+                Function.identity(), t -> TabletMergeability.NEVER)));
+  }
+
+  public NewTableConfiguration withSplits(final SortedMap<Text,TabletMergeability> splits) {
+    checkArgument(splits != null, "splits set is null");
+    checkArgument(!splits.isEmpty(), "splits set is empty");
+    this.splitProps = ImmutableSortedMap.copyOf(splits);
     return this;
   }
 
