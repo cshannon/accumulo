@@ -22,6 +22,7 @@ import java.util.Optional;
 
 import org.apache.accumulo.core.client.admin.TabletAvailability;
 import org.apache.accumulo.core.client.admin.TabletInformation;
+import org.apache.accumulo.core.client.admin.TabletMergeability;
 import org.apache.accumulo.core.data.TabletId;
 import org.apache.accumulo.core.dataImpl.TabletIdImpl;
 import org.apache.accumulo.core.metadata.schema.DataFileValue;
@@ -91,6 +92,11 @@ public class TabletInformationImpl implements TabletInformation {
   @Override
   public TabletAvailability getTabletAvailability() {
     return tabletMetadata.getTabletAvailability();
+  }
+
+  @Override
+  public TabletMergeability getTabletMergeability() {
+    return tabletMetadata.getTabletMergeability().getTabletMergeability();
   }
 
   @Override

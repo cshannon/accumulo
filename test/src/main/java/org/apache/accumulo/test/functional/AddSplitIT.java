@@ -35,6 +35,7 @@ import org.apache.accumulo.core.client.Scanner;
 import org.apache.accumulo.core.client.admin.TabletMergeability;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Mutation;
+import org.apache.accumulo.core.data.Range;
 import org.apache.accumulo.core.data.TableId;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.metadata.schema.TabletMergeabilityMetadata;
@@ -137,6 +138,17 @@ public class AddSplitIT extends AccumuloClusterHarness {
           }
         });
       }
+
+      // Validate getTabletInformation() returns correct results as well
+      c.tableOperations().getTabletInformation(tableName, new Range()).forEach(ti -> {
+        // default tablet should be set to never
+        if (ti.getTabletId().getEndRow() == null) {
+          assertEquals(TabletMergeability.never(), ti.getTabletMergeability());
+        } else {
+          // New splits should match the original setting in the map
+          assertEquals(splits.get(ti.getTabletId().getEndRow()), ti.getTabletMergeability());
+        }
+      });
     }
   }
 
