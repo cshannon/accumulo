@@ -25,18 +25,22 @@ import static org.apache.accumulo.test.ample.metadata.ConditionalWriterIntercept
 import static org.apache.accumulo.test.ample.metadata.TestAmple.not;
 import static org.apache.accumulo.test.compaction.ExternalCompactionTestUtils.assertNoCompactionMetadata;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -45,6 +49,7 @@ import java.util.stream.Stream;
 import org.apache.accumulo.core.client.Accumulo;
 import org.apache.accumulo.core.client.BatchWriter;
 import org.apache.accumulo.core.client.admin.NewTableConfiguration;
+import org.apache.accumulo.core.client.admin.TabletMergeability;
 import org.apache.accumulo.core.clientImpl.ClientContext;
 import org.apache.accumulo.core.clientImpl.TabletMergeabilityUtil;
 import org.apache.accumulo.core.clientImpl.thrift.ThriftTableOperationException;
@@ -77,6 +82,8 @@ import org.apache.accumulo.manager.tableOps.merge.MergeInfo;
 import org.apache.accumulo.manager.tableOps.merge.MergeInfo.Operation;
 import org.apache.accumulo.manager.tableOps.merge.MergeTablets;
 import org.apache.accumulo.manager.tableOps.merge.ReserveTablets;
+import org.apache.accumulo.manager.tableOps.merge.UnreserveAndError;
+import org.apache.accumulo.manager.tableOps.merge.VerifyMergeability;
 import org.apache.accumulo.manager.tableOps.split.AllocateDirsAndEnsureOnline;
 import org.apache.accumulo.manager.tableOps.split.FindSplits;
 import org.apache.accumulo.manager.tableOps.split.PreSplit;
@@ -107,7 +114,7 @@ public class ManagerRepoIT extends SharedMiniClusterBase {
   }
 
   @ParameterizedTest
-  @EnumSource(MergeInfo.Operation.class)
+  @EnumSource(value = MergeInfo.Operation.class, names = {"MERGE", "DELETE"})
   public void testNoWalsMergeRepos(MergeInfo.Operation operation) throws Exception {
     String[] tableNames = getUniqueNames(2);
     String metadataTable = tableNames[0] + operation;
@@ -160,6 +167,66 @@ public class ManagerRepoIT extends SharedMiniClusterBase {
       // Repo should throw an exception due to the WAL existence
       var thrown = assertThrows(IllegalStateException.class, () -> repo.call(fateId, manager));
       assertTrue(thrown.getMessage().contains("has unexpected walogs"));
+    }
+  }
+
+  @Test
+  public void testVerifyMergeability() throws Exception {
+    String[] tableNames = getUniqueNames(2);
+    String metadataTable = tableNames[0];
+    String userTable = tableNames[1];
+
+    try (ClientContext client =
+        (ClientContext) Accumulo.newClient().from(getClientProps()).build()) {
+
+      SortedMap<Text,TabletMergeability> splits = new TreeMap<>();
+      splits.put(new Text("a"), TabletMergeability.always());
+      splits.put(new Text("b"), TabletMergeability.always());
+      splits.put(new Text("c"), TabletMergeability.never());
+      splits.put(new Text("d"), TabletMergeability.after(Duration.ofDays(2)));
+      splits.put(new Text("e"), TabletMergeability.always());
+
+      client.tableOperations().create(userTable, new NewTableConfiguration().withSplits(splits));
+      TableId tableId = TableId.of(client.tableOperations().tableIdMap().get(userTable));
+
+      // Set up Test ample and manager
+      TestAmple.createMetadataTable(client, metadataTable);
+      TestServerAmpleImpl testAmple = (TestServerAmpleImpl) TestAmple
+          .create(getCluster().getServerContext(), Map.of(DataLevel.USER, metadataTable));
+      testAmple.createMetadataFromExisting(client, tableId);
+      Manager manager =
+          mockWithAmple(getCluster().getServerContext(), testAmple, Duration.ofDays(1));
+
+      // Create a test operation and fate id for testing merge and delete rows
+      // and add operation to test metadata for the tablet
+      var fateId = FateId.from(FateInstanceType.USER, UUID.randomUUID());
+      var opid = TabletOperationId.from(TabletOperationType.MERGING, fateId);
+      var extent = new KeyExtent(tableId, null, null);
+
+      try (TabletsMutator tm = testAmple.mutateTablets()) {
+        tm.mutateTablet(extent).putOperation(opid).mutate();
+      }
+
+      MergeInfo mergeInfo = new MergeInfo(tableId, manager.getContext().getNamespaceId(tableId),
+          null, new Text("c").getBytes(), Operation.SYSTEM_MERGE);
+      assertInstanceOf(UnreserveAndError.class,
+          new VerifyMergeability(mergeInfo).call(fateId, manager));
+
+      mergeInfo = new MergeInfo(tableId, manager.getContext().getNamespaceId(tableId), null,
+          new Text("b").getBytes(), Operation.SYSTEM_MERGE);
+      assertInstanceOf(MergeTablets.class, new VerifyMergeability(mergeInfo).call(fateId, manager));
+
+      // Not enough time has passed for Tablet
+      mergeInfo = new MergeInfo(tableId, manager.getContext().getNamespaceId(tableId),
+          new Text("c").getBytes(), new Text("e").getBytes(), Operation.SYSTEM_MERGE);
+      assertInstanceOf(UnreserveAndError.class,
+          new VerifyMergeability(mergeInfo).call(fateId, manager));
+
+      // update time to 3 days so enough time has passed
+      manager = mockWithAmple(getCluster().getServerContext(), testAmple, Duration.ofDays(3));
+      mergeInfo = new MergeInfo(tableId, manager.getContext().getNamespaceId(tableId),
+          new Text("c").getBytes(), new Text("e").getBytes(), Operation.SYSTEM_MERGE);
+      assertInstanceOf(MergeTablets.class, new VerifyMergeability(mergeInfo).call(fateId, manager));
     }
   }
 

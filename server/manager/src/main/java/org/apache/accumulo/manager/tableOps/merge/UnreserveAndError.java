@@ -45,8 +45,7 @@ public class UnreserveAndError extends ManagerRepo {
   public Repo<Manager> call(FateId fateId, Manager environment) throws Exception {
     FinishTableRangeOp.removeOperationIds(log, mergeInfo, fateId, environment);
     throw new AcceptableThriftTableOperationException(mergeInfo.tableId.toString(), null,
-        mergeInfo.op == MergeInfo.Operation.MERGE ? TableOperation.MERGE
-            : TableOperation.DELETE_RANGE,
+        mergeInfo.op.isMergeOp() ? TableOperation.MERGE : TableOperation.DELETE_RANGE,
         TableOperationExceptionType.OTHER,
         "Aborted merge because it would produce a tablets with more files than the configured limit of "
             + maxFiles + ". Observed " + totalFiles + " files in the merge range.");
