@@ -1238,7 +1238,7 @@ public class Manager extends AbstractServer
       throw new IllegalStateException("Unable to read " + zroot + Constants.ZRECOVERY, e);
     }
 
-    this.splitter = new Splitter(context);
+    this.splitter = new Splitter(this);
     this.splitter.start();
 
     watchers.add(new TabletGroupWatcher(this, this.userTabletStore, null, managerMetrics) {

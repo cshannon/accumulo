@@ -18,6 +18,8 @@
  */
 package org.apache.accumulo.manager.split;
 
+import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
+
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
@@ -30,10 +32,16 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.accumulo.core.conf.Property;
 import org.apache.accumulo.core.data.TableId;
+import org.apache.accumulo.core.dataImpl.KeyExtent;
+import org.apache.accumulo.core.fate.Fate;
+import org.apache.accumulo.core.fate.FateInstanceType;
+import org.apache.accumulo.core.fate.FateKey;
 import org.apache.accumulo.core.file.FileOperations;
 import org.apache.accumulo.core.file.FileSKVIterator;
 import org.apache.accumulo.core.metadata.TabletFile;
 import org.apache.accumulo.core.util.cache.Caches.CacheName;
+import org.apache.accumulo.manager.Manager;
+import org.apache.accumulo.manager.tableOps.split.FindSplits;
 import org.apache.accumulo.server.ServerContext;
 import org.apache.accumulo.server.conf.TableConfiguration;
 import org.apache.hadoop.fs.FileSystem;
@@ -49,9 +57,68 @@ public class Splitter {
 
   private static final Logger LOG = LoggerFactory.getLogger(Splitter.class);
 
+  private final Manager manager;
   private final ThreadPoolExecutor splitExecutor;
   // tracks which tablets are queued in splitExecutor
-  private final Set<Text> queuedTablets = ConcurrentHashMap.newKeySet();
+  private final Map<Text,KeyExtent> queuedTablets = new ConcurrentHashMap<>();
+
+  class SplitWorker implements Runnable {
+
+    @Override
+    public void run() {
+      try {
+        while (manager.stillManager()) {
+          if (queuedTablets.isEmpty()) {
+            sleepUninterruptibly(10, TimeUnit.MILLISECONDS);
+            continue;
+          }
+
+          Map<Text,KeyExtent> userSplits = new HashMap<>();
+          Map<Text,KeyExtent> metaSplits = new HashMap<>();
+
+          queuedTablets.forEach((metaRow, extent) -> {
+            switch (FateInstanceType.fromTableId((extent.tableId()))) {
+              case USER:
+                userSplits.put(metaRow, extent);
+                break;
+              case META:
+                metaSplits.put(metaRow, extent);
+                break;
+              default:
+                throw new IllegalStateException("Unexpected FateInstanceType");
+            }
+          });
+
+          if (!userSplits.isEmpty()) {
+            try (var seeder = manager.fate(FateInstanceType.USER).beginSeeding()) {
+              for (KeyExtent extent : userSplits.values()) {
+                seeder.attemptToSeedTransaction(Fate.FateOperation.SYSTEM_SPLIT,
+                    FateKey.forSplit(extent), new FindSplits(extent), true);
+              }
+            } finally {
+              queuedTablets.keySet().removeAll(userSplits.keySet());
+            }
+          }
+
+          if (!metaSplits.isEmpty()) {
+            try (var seeder = manager.fate(FateInstanceType.META).beginSeeding()) {
+              for (KeyExtent extent : metaSplits.values()) {
+                seeder.attemptToSeedTransaction(Fate.FateOperation.SYSTEM_SPLIT,
+                    FateKey.forSplit(extent), new FindSplits(extent), true);
+              }
+            } finally {
+              queuedTablets.keySet().removeAll(metaSplits.keySet());
+            }
+          }
+
+        }
+
+      } catch (Exception e) {
+        // LOG.error("Failed to split {}", extent, e);
+        LOG.error("Failed to split", e);
+      }
+    }
+  }
 
   public static class FileInfo {
     final Text firstRow;
@@ -151,7 +218,9 @@ public class Splitter {
 
   final LoadingCache<CacheKey,FileInfo> splitFileCache;
 
-  public Splitter(ServerContext context) {
+  public Splitter(Manager manager) {
+    this.manager = manager;
+    ServerContext context = manager.getContext();
     int numThreads = context.getConfiguration().getCount(Property.MANAGER_SPLIT_WORKER_THREADS);
 
     this.splitExecutor = context.threadPools().getPoolBuilder("split_seeder")
@@ -185,14 +254,15 @@ public class Splitter {
     return splitFileCache.get(new CacheKey(tableId, tabletFile));
   }
 
-  public void initiateSplit(SeedSplitTask seedSplitTask) {
+  public void initiateSplit(KeyExtent extent) {
     // Want to avoid queuing the same tablet multiple times, it would not cause bugs but would waste
     // work. Use the metadata row to identify a tablet because the KeyExtent also includes the prev
     // end row which may change when splits happen. The metaRow is conceptually tableId+endRow and
     // that does not change for a split.
+    var seedSplitTask = new SeedSplitTask(manager, extent);
     Text metaRow = seedSplitTask.getExtent().toMetaRow();
     int qsize = queuedTablets.size();
-    if (qsize < 10_000 && queuedTablets.add(metaRow)) {
+    if (qsize < 10_000 && queuedTablets.putIfAbsent(metaRow, extent) == null) {
       Runnable taskWrapper = () -> {
         try {
           seedSplitTask.run();
